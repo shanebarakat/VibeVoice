@@ -315,6 +315,121 @@
       text-align: center;
     }
   }
+
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .history-controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .history-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    background: #f9faff;
+  }
+
+  .history-empty {
+    color: var(--text-muted);
+    text-align: center;
+    margin: 20px 0;
+  }
+
+  .history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+
+  .history-item:last-child {
+    border-bottom: none;
+  }
+
+  .history-item-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .history-item-text {
+    font-size: 14px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 400px;
+  }
+
+  .history-item-meta {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .history-item-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .history-item-actions button {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+
+  .history-stats {
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .preferences-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .pref-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pref-item span {
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .pref-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  .voice-import-form {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .voice-import-form input {
+    flex: 1;
+    min-width: 200px;
+  }
 </style>
 <body>
   <div class="app-shell">
@@ -378,6 +493,61 @@
     <section class="panel">
       <span class="field-label">Runtime Logs</span>
       <pre id="logOutput"></pre>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <span class="field-label">Generation History</span>
+        <div class="history-controls">
+          <button id="refreshHistory" type="button" class="secondary-btn">Refresh</button>
+          <button id="clearHistory" type="button" class="secondary-btn">Clear All</button>
+          <button id="exportAllHistory" type="button" class="secondary-btn">Export</button>
+          <input type="file" id="importHistoryFile" style="display:none" accept=".pkl">
+          <button id="importHistory" type="button" class="secondary-btn">Import</button>
+        </div>
+      </div>
+      <div id="historyList" class="history-list">
+        <p class="history-empty">No history entries yet</p>
+      </div>
+      <div id="historyStats" class="history-stats"></div>
+    </section>
+
+    <section class="panel">
+      <span class="field-label">User Preferences</span>
+      <div class="preferences-form">
+        <label class="pref-item">
+          <span>Auto-save to history</span>
+          <input type="checkbox" id="prefAutoSave" checked>
+        </label>
+        <label class="pref-item">
+          <span>Theme</span>
+          <select id="prefTheme" class="select-control">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label class="pref-item">
+          <span>Notifications</span>
+          <input type="checkbox" id="prefNotifications" checked>
+        </label>
+        <label class="pref-item">
+          <span>Webhook URL (optional)</span>
+          <input type="text" id="prefWebhook" class="text-input" style="min-height:auto;height:36px" placeholder="https://...">
+        </label>
+        <div class="pref-actions">
+          <button id="savePrefs" type="button" class="secondary-btn">Save Preferences</button>
+          <button id="resetPrefs" type="button" class="secondary-btn">Reset to Defaults</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <span class="field-label">Custom Voice Import</span>
+      <div class="voice-import-form">
+        <input type="text" id="voiceUrl" class="text-input" style="min-height:auto;height:36px" placeholder="Voice file URL (https://...)">
+        <input type="text" id="voiceName" class="text-input" style="min-height:auto;height:36px" placeholder="Voice name">
+        <button id="fetchVoice" type="button" class="secondary-btn">Fetch Voice</button>
+      </div>
     </section>
   </div>
 
@@ -1011,6 +1181,239 @@
     clearPreviewTimer();
     revokeDownloadUrl();
   });
+
+  const historyList = document.getElementById('historyList');
+  const historyStats = document.getElementById('historyStats');
+  const refreshHistoryBtn = document.getElementById('refreshHistory');
+  const clearHistoryBtn = document.getElementById('clearHistory');
+  const exportAllHistoryBtn = document.getElementById('exportAllHistory');
+  const importHistoryBtn = document.getElementById('importHistory');
+  const importHistoryFile = document.getElementById('importHistoryFile');
+
+  const prefAutoSave = document.getElementById('prefAutoSave');
+  const prefTheme = document.getElementById('prefTheme');
+  const prefNotifications = document.getElementById('prefNotifications');
+  const prefWebhook = document.getElementById('prefWebhook');
+  const savePrefsBtn = document.getElementById('savePrefs');
+  const resetPrefsBtn = document.getElementById('resetPrefs');
+
+  const voiceUrlInput = document.getElementById('voiceUrl');
+  const voiceNameInput = document.getElementById('voiceName');
+  const fetchVoiceBtn = document.getElementById('fetchVoice');
+
+  const formatDuration = (sec) => {
+    const mins = Math.floor(sec / 60);
+    const secs = Math.floor(sec % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatBytes = (bytes) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  };
+
+  const loadHistory = async () => {
+    try {
+      const response = await fetch('/api/history?limit=50');
+      const data = await response.json();
+
+      if (data.entries.length == 0) {
+        historyList.innerHTML = '<p class="history-empty">No history entries yet</p>';
+        historyStats.textContent = '';
+        return;
+      }
+
+      historyList.innerHTML = data.entries.map(entry => `
+        <div class="history-item" data-id="${entry.id}">
+          <div class="history-item-info">
+            <div class="history-item-text">${entry.text}</div>
+            <div class="history-item-meta">
+              ${entry.voice} | ${formatDuration(entry.duration_sec)} | ${formatBytes(entry.file_size)} | ${new Date(entry.created_at).toLocaleString()}
+            </div>
+          </div>
+          <div class="history-item-actions">
+            <button class="secondary-btn play-btn" onclick="playHistoryAudio('${entry.id}')">Play</button>
+            <button class="secondary-btn" onclick="downloadHistoryAudio('${entry.id}')">Download</button>
+            <button class="secondary-btn" onclick="exportHistoryAudio('${entry.id}')">Export</button>
+            <button class="secondary-btn" onclick="deleteHistoryEntry('${entry.id}')">Delete</button>
+          </div>
+        </div>
+      `).join('');
+
+      const statsResponse = await fetch('/api/history/stats');
+      const stats = await statsResponse.json();
+      historyStats.innerHTML = `
+        Total: ${stats.total_entries} entries |
+        Duration: ${formatDuration(stats.total_duration_sec)} |
+        Size: ${formatBytes(stats.total_size_bytes)}
+      `;
+    } catch (err) {
+      console.error('Failed to load history', err);
+      historyList.innerHTML = '<p class="history-empty">Failed to load history</p>';
+    }
+  };
+
+  window.playHistoryAudio = async (entryId) => {
+    const audio = new Audio(`/api/history/${entryId}/audio`);
+    audio.play();
+  };
+
+  window.downloadHistoryAudio = async (entryId) => {
+    const link = document.createElement('a');
+    link.href = `/api/history/${entryId}/download`;
+    link.download = `${entryId}.wav`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  window.exportHistoryAudio = async (entryId) => {
+    const format = prompt('Export format (mp3, ogg, flac):', 'mp3');
+    if (!format) return;
+
+    try {
+      const response = await fetch(`/api/history/${entryId}/export?format=${format}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      alert('Exported to: ' + data.path);
+    } catch (err) {
+      alert('Export failed: ' + err.message);
+    }
+  };
+
+  window.deleteHistoryEntry = async (entryId) => {
+    if (!confirm('Delete this entry?')) return;
+
+    try {
+      await fetch(`/api/history/${entryId}`, { method: 'DELETE' });
+      loadHistory();
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+  };
+
+  refreshHistoryBtn.addEventListener('click', loadHistory);
+
+  clearHistoryBtn.addEventListener('click', async () => {
+    if (!confirm('Clear all history? This cannot be undone.')) return;
+
+    try {
+      await fetch('/api/history', { method: 'DELETE' });
+      loadHistory();
+    } catch (err) {
+      alert('Clear failed: ' + err.message);
+    }
+  });
+
+  exportAllHistoryBtn.addEventListener('click', async () => {
+    const link = document.createElement('a');
+    link.href = '/api/history/export';
+    link.download = 'history_backup.pkl';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  });
+
+  importHistoryBtn.addEventListener('click', () => {
+    importHistoryFile.click();
+  });
+
+  importHistoryFile.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const response = await fetch('/api/history/import', {
+        method: 'POST',
+        body: arrayBuffer
+      });
+      const data = await response.json();
+      alert(`Imported ${data.imported} entries`);
+      loadHistory();
+    } catch (err) {
+      alert('Import failed: ' + err.message);
+    }
+  });
+
+  const loadPreferences = async () => {
+    try {
+      const response = await fetch('/api/preferences');
+      const prefs = await response.json();
+
+      prefAutoSave.checked = prefs.auto_save_history;
+      prefTheme.value = prefs.theme || 'light';
+      prefNotifications.checked = prefs.notifications_enabled;
+      prefWebhook.value = prefs.webhook_url || '';
+    } catch (err) {
+      console.error('Failed to load preferences', err);
+    }
+  };
+
+  savePrefsBtn.addEventListener('click', async () => {
+    try {
+      const prefs = {
+        auto_save_history: prefAutoSave.checked,
+        theme: prefTheme.value,
+        notifications_enabled: prefNotifications.checked,
+        webhook_url: prefWebhook.value
+      };
+
+      await fetch('/api/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prefs)
+      });
+
+      alert('Preferences saved');
+    } catch (err) {
+      alert('Failed to save preferences: ' + err.message);
+    }
+  });
+
+  resetPrefsBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/api/preferences/reset', { method: 'POST' });
+      loadPreferences();
+      alert('Preferences reset to defaults');
+    } catch (err) {
+      alert('Failed to reset preferences: ' + err.message);
+    }
+  });
+
+  fetchVoiceBtn.addEventListener('click', async () => {
+    const url = voiceUrlInput.value.trim();
+    const name = voiceNameInput.value.trim();
+
+    if (!url || !name) {
+      alert('Please enter both URL and name');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/voices/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, name })
+      });
+
+      if (!response.ok) {
+        throw new Error('Fetch failed');
+      }
+
+      const data = await response.json();
+      alert('Voice saved to: ' + data.path);
+      voiceUrlInput.value = '';
+      voiceNameInput.value = '';
+    } catch (err) {
+      alert('Failed to fetch voice: ' + err.message);
+    }
+  });
+
+  loadHistory();
+  loadPreferences();
 })();
 </script>
 </body>
