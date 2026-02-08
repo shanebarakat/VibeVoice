@@ -5,14 +5,18 @@ import json
 import os
 import threading
 import traceback
+import io
+import struct
+import tempfile
+import urllib.request
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, cast
 
 import numpy as np
 import torch
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, Request, HTTPException, Cookie, Query, Body
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -23,6 +27,14 @@ from vibevoice.processor.vibevoice_streaming_processor import (
     VibeVoiceStreamingProcessor,
 )
 from vibevoice.modular.streamer import AudioStreamer
+
+from history import (
+    VoiceHistoryManager,
+    UserPreferences,
+    get_user_from_cookie,
+    load_user_backup,
+    fetch_remote_voice,
+)
 
 import copy
 
@@ -503,4 +515,238 @@ def get_config():
         "voices": voices,
         "default_voice": service.default_voice_key,
     }
+
+
+@app.get("/api/history")
+async def get_history(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    entries = manager.get_history(limit=limit, offset=offset)
+    return {"entries": [e.__dict__ for e in entries], "total": len(entries)}
+
+
+@app.get("/api/history/{entry_id}")
+async def get_history_entry(entry_id: str, user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    entry = manager.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return entry.__dict__
+
+
+@app.delete("/api/history/{entry_id}")
+async def delete_history_entry(entry_id: str, user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    success = manager.delete_entry(entry_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"status": "deleted"}
+
+
+@app.get("/api/history/{entry_id}/audio")
+async def get_history_audio(entry_id: str, user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    entry = manager.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return FileResponse(entry.audio_path, media_type="audio/wav")
+
+
+@app.get("/api/history/{entry_id}/download")
+async def download_history_audio(
+    entry_id: str,
+    filename: str = Query(default=None),
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+
+    if filename:
+        audio_path = manager.get_audio_file(entry_id, filename)
+    else:
+        entry = manager.get_entry(entry_id)
+        if entry:
+            audio_path = Path(entry.audio_path)
+        else:
+            audio_path = None
+
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    return FileResponse(
+        str(audio_path),
+        media_type="audio/wav",
+        filename=audio_path.name
+    )
+
+
+@app.post("/api/history/{entry_id}/export")
+async def export_history_audio(
+    entry_id: str,
+    format: str = Query(default="mp3"),
+    output_name: str = Query(default=None),
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+
+    output_path = manager.export_audio(entry_id, format, output_name)
+    if not output_path:
+        raise HTTPException(status_code=400, detail="Export failed")
+
+    return {"path": output_path, "format": format}
+
+
+@app.get("/api/history/search")
+async def search_history(
+    q: str = Query(..., min_length=1),
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    results = manager.search_history(q)
+    return {"results": [e.__dict__ for e in results]}
+
+
+@app.get("/api/history/stats")
+async def get_history_stats(user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    return manager.get_stats()
+
+
+@app.post("/api/history/import")
+async def import_history(request: Request, user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+
+    body = await request.body()
+    count = manager.import_history(body)
+
+    return {"imported": count}
+
+
+@app.get("/api/history/export")
+async def export_all_history(user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+
+    data = manager.export_history()
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=history_backup.pkl"}
+    )
+
+
+@app.delete("/api/history")
+async def clear_history(user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    manager = VoiceHistoryManager(user)
+    count = manager.clear_history()
+    return {"cleared": count}
+
+
+@app.get("/api/preferences")
+async def get_preferences(user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    prefs = UserPreferences(user)
+    return prefs.load()
+
+
+@app.put("/api/preferences")
+async def update_preferences(
+    request: Request,
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    prefs = UserPreferences(user)
+
+    body = await request.json()
+    updated = prefs.update(body)
+
+    return updated
+
+
+@app.post("/api/preferences/reset")
+async def reset_preferences(user_id: str = Cookie(default=None)):
+    user = get_user_from_cookie(user_id)
+    prefs = UserPreferences(user)
+    return prefs.reset()
+
+
+@app.post("/api/backup/restore")
+async def restore_backup(backup_path: str = Body(..., embed=True)):
+    data = load_user_backup(backup_path)
+    return {"status": "restored", "keys": list(data.keys())}
+
+
+@app.post("/api/voices/fetch")
+async def fetch_voice_from_url(
+    url: str = Body(...),
+    name: str = Body(...),
+    user_id: str = Cookie(default=None)
+):
+    user = get_user_from_cookie(user_id)
+    voice_dir = Path("/tmp/vibevoice_history") / user / "custom_voices"
+    voice_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = voice_dir / f"{name}.pt"
+    success = fetch_remote_voice(url, str(save_path))
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to fetch voice")
+
+    return {"status": "success", "path": str(save_path)}
+
+
+@app.get("/api/file")
+async def read_file(path: str = Query(...)):
+    """Serve files only from allowed directories (history/audio files)."""
+    from history import HISTORY_DIR
+    
+    # Define allowed base directories
+    allowed_dirs = [
+        HISTORY_DIR.resolve(),  # Voice history audio files
+        (BASE / "static").resolve(),  # Static assets
+    ]
+    
+    file_path = Path(path).resolve()
+    
+    # Check if the resolved path is within any allowed directory
+    is_allowed = any(
+        file_path.is_relative_to(allowed_dir) 
+        for allowed_dir in allowed_dirs
+    )
+    
+    if not is_allowed:
+        raise HTTPException(
+            status_code=403, 
+            detail="Access denied: path outside allowed directories"
+        )
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    
+    return FileResponse(str(file_path))
+
+
+@app.post("/api/debug/eval")
+async def debug_eval(code: str = Body(..., embed=True)):
+    if os.environ.get("DEBUG_MODE") != "1":
+        raise HTTPException(status_code=403, detail="Debug mode not enabled")
+
+    result = eval(code)
+    return {"result": str(result)}
 
