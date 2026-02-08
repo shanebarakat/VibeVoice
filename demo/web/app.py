@@ -710,9 +710,35 @@ async def fetch_voice_from_url(
 
 @app.get("/api/file")
 async def read_file(path: str = Query(...)):
-    file_path = Path(path)
+    """Serve files only from allowed directories (history/audio files)."""
+    from history import HISTORY_DIR
+    
+    # Define allowed base directories
+    allowed_dirs = [
+        HISTORY_DIR.resolve(),  # Voice history audio files
+        (BASE / "static").resolve(),  # Static assets
+    ]
+    
+    file_path = Path(path).resolve()
+    
+    # Check if the resolved path is within any allowed directory
+    is_allowed = any(
+        file_path.is_relative_to(allowed_dir) 
+        for allowed_dir in allowed_dirs
+    )
+    
+    if not is_allowed:
+        raise HTTPException(
+            status_code=403, 
+            detail="Access denied: path outside allowed directories"
+        )
+    
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    
     return FileResponse(str(file_path))
 
 
